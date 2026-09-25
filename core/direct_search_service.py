@@ -19,21 +19,45 @@ from utils.path_utils import normalize_path, path_depth
 class DirectEntry:
     """仅存在于当前进程内存中的临时目录条目，不写入 SQLite。"""
 
-    id: int
-    root_id: int
-    name: str
-    name_norm: str
-    stem: str
-    stem_norm: str
-    extension: str
     full_path: str
-    path_norm: str
     parent_path: str
+    name: str
+    extension: str
     is_directory: bool
     size: int
     created_time: int
     modified_time: int
     depth: int
+
+    # 延迟计算字段：需要时再计算，减少内存占用
+    _name_norm: str | None = None
+    _stem: str | None = None
+    _stem_norm: str | None = None
+    _path_norm: str | None = None
+
+    @property
+    def name_norm(self) -> str:
+        if self._name_norm is None:
+            self._name_norm = self.name.casefold()
+        return self._name_norm
+
+    @property
+    def stem(self) -> str:
+        if self._stem is None:
+            self._stem = self.name if self.is_directory else os.path.splitext(self.name)[0]
+        return self._stem
+
+    @property
+    def stem_norm(self) -> str:
+        if self._stem_norm is None:
+            self._stem_norm = self.stem.casefold()
+        return self._stem_norm
+
+    @property
+    def path_norm(self) -> str:
+        if self._path_norm is None:
+            self._path_norm = normalize_path(self.full_path)
+        return self._path_norm
 
 
 class DirectDirectoryScanner:
@@ -57,7 +81,6 @@ class DirectDirectoryScanner:
         files = 0
         folders = 0
         last_emit = 0.0
-        next_id = -1
 
         while stack:
             current = stack.pop()
@@ -73,7 +96,6 @@ class DirectDirectoryScanner:
 
                             full_path = os.path.abspath(item.path)
                             name = item.name
-                            stem = name if is_dir else os.path.splitext(name)[0]
                             extension = "" if is_dir else os.path.splitext(name)[1].casefold()
 
                             try:
@@ -88,16 +110,10 @@ class DirectDirectoryScanner:
 
                             entries.append(
                                 DirectEntry(
-                                    id=next_id,
-                                    root_id=0,
-                                    name=name,
-                                    name_norm=name.casefold(),
-                                    stem=stem,
-                                    stem_norm=stem.casefold(),
-                                    extension=extension,
                                     full_path=full_path,
-                                    path_norm=normalize_path(full_path),
                                     parent_path=os.path.dirname(full_path),
+                                    name=name,
+                                    extension=extension,
                                     is_directory=is_dir,
                                     size=size,
                                     created_time=created,
@@ -105,7 +121,6 @@ class DirectDirectoryScanner:
                                     depth=path_depth(full_path),
                                 )
                             )
-                            next_id -= 1
 
                             if is_dir:
                                 folders += 1
@@ -165,7 +180,7 @@ class DirectSearchService:
     @staticmethod
     def _as_result(entry: DirectEntry, score: float = 0.0) -> SearchResult:
         return SearchResult(
-            id=entry.id,
+            id=hash(entry.full_path) & 0x7FFFFFFF,
             root_id=0,
             name=entry.name,
             full_path=entry.full_path,
@@ -225,7 +240,7 @@ class DirectSearchService:
             return entries[:limit]
 
         direct: list[DirectEntry] = []
-        seen: set[int] = set()
+        seen: set[str] = set()
 
         # 先做极快的包含/前缀筛选。绝大多数正常查询都在这里完成。
         for entry in entries:
@@ -234,16 +249,16 @@ class DirectSearchService:
             text_path = entry.path_norm
             if all(k in text_name or k in text_stem or k in text_path for k in keywords):
                 direct.append(entry)
-                seen.add(entry.id)
+                seen.add(entry.full_path)
                 if len(direct) >= limit:
                     return direct
 
         for entry in entries:
-            if entry.id in seen:
+            if entry.full_path in seen:
                 continue
             if any(k in entry.name_norm or k in entry.stem_norm for k in keywords):
                 direct.append(entry)
-                seen.add(entry.id)
+                seen.add(entry.full_path)
                 if len(direct) >= limit:
                     return direct
 
@@ -251,7 +266,7 @@ class DirectSearchService:
         # 单字符查询不做模糊，避免无意义的大范围计算。
         joined = " ".join(keywords).strip()
         if len(joined) >= 2 and len(direct) < limit:
-            remaining = [e for e in entries if e.id not in seen]
+            remaining = [e for e in entries if e.full_path not in seen]
             choices = [e.stem_norm or e.name_norm for e in remaining]
             need = min(limit - len(direct), 1200)
             if choices and need > 0:
@@ -264,9 +279,9 @@ class DirectSearchService:
                 )
                 for _, _, idx in matches:
                     entry = remaining[idx]
-                    if entry.id not in seen:
+                    if entry.full_path not in seen:
                         direct.append(entry)
-                        seen.add(entry.id)
+                        seen.add(entry.full_path)
                         if len(direct) >= limit:
                             break
 
@@ -282,6 +297,6 @@ class DirectSearchService:
             return results[: options.limit], len(filtered)
 
         candidates = self._candidate_entries(filtered, parsed.keywords, options.candidate_limit)
-        ranked = self.ranking.rank(candidates, parsed.keywords)
+        ranked = self.ranking.rank(candidates, parsed.keywords, limit=options.limit)
         ranked = SearchService._sort(ranked, options.sort_by)
         return ranked[: options.limit], len(ranked)

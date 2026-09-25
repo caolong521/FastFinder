@@ -102,12 +102,32 @@ class RankingEngine:
             + last_opened_bonus
         )
 
-    def rank(self, rows, keywords: list[str]) -> list[SearchResult]:
-        results: list[SearchResult] = []
+    def rank(self, rows, keywords: list[str], limit: int = 200) -> list[SearchResult]:
+        """Score rows and construct SearchResult only for top-N winners.
+        
+        This avoids creating thousands of throwaway SearchResult objects when
+        most candidates will be discarded by the final slice.
+        """
+        if not rows:
+            return []
+        
+        # First pass: score all rows and keep (score, row) pairs
+        scored = []
         for row in rows:
             score = self.score(row, keywords)
             if keywords and score <= 0:
                 continue
+            scored.append((score, row))
+        
+        if not scored:
+            return []
+        
+        # Sort by score descending, then modified_time descending
+        scored.sort(key=lambda x: (x[0], _get(x[1], "modified_time", 0)), reverse=True)
+        
+        # Construct SearchResult only for the top-N winners
+        results: list[SearchResult] = []
+        for score, row in scored[:limit]:
             results.append(
                 SearchResult(
                     id=int(_get(row, "id", 0)),
@@ -127,5 +147,4 @@ class RankingEngine:
                     last_opened_time=int(_get(row, "last_opened_time", 0) or 0),
                 )
             )
-        results.sort(key=lambda x: (x.score, x.modified_time), reverse=True)
         return results

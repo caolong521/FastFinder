@@ -37,6 +37,10 @@ class _Handler(FileSystemEventHandler):
         with self._lock:
             old = self._last.get(path, 0.0)
             self._last[path] = now
+            # Periodically prune entries older than the debounce window to prevent unbounded growth
+            if len(self._last) > 1000 and (len(self._last) % 100 == 0):
+                cutoff = now - 1.0
+                self._last = {p: t for p, t in self._last.items() if t >= cutoff}
         return now - old < 0.15
 
     def _touch_root(self) -> None:

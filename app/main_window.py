@@ -880,6 +880,12 @@ class MainWindow(QMainWindow):
             if direct
             else "索引库：适合常用目录，打开即搜，后台自动保持更新"
         )
+        if not direct and self.direct_entries:
+            # Clear large direct_entries list when switching to index mode
+            self.direct_entries = []
+            import gc
+            gc.collect()
+        
         if direct and not self.direct_entries:
             self.model.clear()
             self.status_label.setText("指定目录模式：粘贴目录路径后按 Enter，或点击“选择目录”。")

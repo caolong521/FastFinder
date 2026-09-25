@@ -37,8 +37,9 @@ class Database:
         conn.execute("PRAGMA temp_store=MEMORY;")
         conn.execute("PRAGMA foreign_keys=ON;")
         conn.execute("PRAGMA busy_timeout=5000;")
-        # Per-connection read tuning.  These are cheap and do not scan the DB.
-        conn.execute("PRAGMA cache_size=-65536;")       # ~64 MiB page cache
+        # Per-connection read tuning.  Reduced from 64 MiB to 16 MiB to lower
+        # memory footprint when multiple connections are alive simultaneously.
+        conn.execute("PRAGMA cache_size=-16384;")       # ~16 MiB page cache
         try:
             conn.execute("PRAGMA mmap_size=268435456;")  # up to 256 MiB mmap
         except sqlite3.DatabaseError:
@@ -332,21 +333,22 @@ class Database:
             ((row[7],) for row in rows),
         )
 
-        existing: dict[str, sqlite3.Row] = {}
+        # Load only the columns needed for comparison, not full Row objects.
+        existing: dict[str, tuple] = {}
         path_norms = [row[7] for row in rows]
         # Keep each IN query well below SQLite's traditional parameter limit.
         for start in range(0, len(path_norms), 400):
             chunk = path_norms[start:start + 400]
             placeholders = ",".join("?" for _ in chunk)
             sql = f"""
-                SELECT id, path_norm, name, name_norm, stem, stem_norm, extension,
+                SELECT id, name, name_norm, stem, stem_norm, extension,
                        full_path, parent_path, is_directory, size, created_time,
                        modified_time, depth
                 FROM file_entries
                 WHERE root_id=? AND path_norm IN ({placeholders})
             """
-            for old in conn.execute(sql, (int(root_id), *chunk)).fetchall():
-                existing[str(old["path_norm"])] = old
+            for old in conn.execute(sql, (int(root_id), *chunk)):
+                existing[str(old["path_norm"])] = tuple(old)
 
         inserts: list[tuple] = []
         updates: list[tuple] = []
@@ -358,19 +360,20 @@ class Database:
                 inserts.append(row)
                 continue
 
+            # Compare using tuple indices instead of Row field access
             same = (
-                old["name"] == row[1]
-                and old["name_norm"] == row[2]
-                and old["stem"] == row[3]
-                and old["stem_norm"] == row[4]
-                and old["extension"] == row[5]
-                and old["full_path"] == row[6]
-                and old["parent_path"] == row[8]
-                and int(old["is_directory"] or 0) == int(row[9])
-                and int(old["size"] or 0) == int(row[10])
-                and int(old["created_time"] or 0) == int(row[11])
-                and int(old["modified_time"] or 0) == int(row[12])
-                and int(old["depth"] or 0) == int(row[13])
+                old[1] == row[1]   # name
+                and old[2] == row[2]  # name_norm
+                and old[3] == row[3]  # stem
+                and old[4] == row[4]  # stem_norm
+                and old[5] == row[5]  # extension
+                and old[6] == row[6]  # full_path
+                and old[8] == row[8]  # parent_path
+                and int(old[9] or 0) == int(row[9])   # is_directory
+                and int(old[10] or 0) == int(row[10])  # size
+                and int(old[11] or 0) == int(row[11])  # created_time
+                and int(old[12] or 0) == int(row[12])  # modified_time
+                and int(old[13] or 0) == int(row[13])  # depth
             )
             if same:
                 unchanged += 1
@@ -379,7 +382,7 @@ class Database:
             updates.append((
                 row[0], row[1], row[2], row[3], row[4], row[5], row[6],
                 row[7], row[8], row[9], row[10], row[11], row[12], row[13],
-                row[14], int(old["id"]),
+                row[14], int(old[0]),  # indexed_time, id
             ))
 
         if inserts:
@@ -777,7 +780,8 @@ class Database:
                         LIMIT ?
                     """
                     try:
-                        rows = conn.execute(sql, [" AND ".join(tokens), *params, limit]).fetchall()
+                        cursor = conn.execute(sql, [" AND ".join(tokens), *params, limit])
+                        rows = cursor.fetchall()
                         if not add_rows(rows):
                             return result
                     except sqlite3.OperationalError:
@@ -801,7 +805,8 @@ class Database:
                     WHERE {' AND '.join(where)}
                     LIMIT ?
                 """
-                rows = conn.execute(sql, [*params, *text_params, limit]).fetchall()
+                cursor = conn.execute(sql, [*params, *text_params, limit])
+                rows = cursor.fetchall()
                 if not add_rows(rows):
                     return result
 
@@ -819,7 +824,8 @@ class Database:
                         WHERE {' AND '.join(where)}
                         LIMIT ?
                     """
-                    rows = conn.execute(sql, [*params, prefix, prefix, limit]).fetchall()
+                    cursor = conn.execute(sql, [*params, prefix, prefix, limit])
+                    rows = cursor.fetchall()
                     add_rows(rows)
 
             return result[:limit]
