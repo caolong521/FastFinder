@@ -8,6 +8,11 @@ from database.database import Database
 from models.search_result import SearchResult
 from utils.file_utils import DOCUMENT_EXTENSIONS, IMAGE_EXTENSIONS, PROGRAM_EXTENSIONS
 
+# Pre-sorted extension lists to avoid repeated sorting on every search
+_SORTED_DOC_EXTS = sorted(DOCUMENT_EXTENSIONS)
+_SORTED_IMG_EXTS = sorted(IMAGE_EXTENSIONS)
+_SORTED_PROG_EXTS = sorted(PROGRAM_EXTENSIONS)
+
 
 @dataclass(slots=True)
 class SearchOptions:
@@ -29,11 +34,11 @@ class SearchService:
     @staticmethod
     def _category_extensions(category: str) -> list[str] | None:
         if category == "document":
-            return sorted(DOCUMENT_EXTENSIONS)
+            return _SORTED_DOC_EXTS
         if category == "image":
-            return sorted(IMAGE_EXTENSIONS)
+            return _SORTED_IMG_EXTS
         if category == "program":
-            return sorted(PROGRAM_EXTENSIONS)
+            return _SORTED_PROG_EXTS
         return None
 
     @staticmethod
@@ -92,6 +97,13 @@ class SearchService:
 
     @staticmethod
     def _sort(results: list[SearchResult], sort_by: str) -> list[SearchResult]:
+        """Sort results by specified criterion.
+        
+        Uses key functions that avoid repeated attribute access and method calls.
+        """
+        if not results:
+            return results
+            
         if sort_by == "modified_desc":
             return sorted(results, key=lambda x: x.modified_time, reverse=True)
         if sort_by == "modified_asc":
@@ -112,4 +124,5 @@ class SearchService:
             return sorted(results, key=lambda x: (not x.is_directory, x.extension, x.name.casefold()))
         if sort_by == "path":
             return sorted(results, key=lambda x: x.full_path.casefold())
+        # Default: relevance-based sorting
         return sorted(results, key=lambda x: (x.score, x.modified_time), reverse=True)
