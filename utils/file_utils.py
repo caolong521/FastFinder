@@ -19,26 +19,35 @@ def split_name(path_or_name: str) -> tuple[str, str]:
     return stem, ext.casefold()
 
 
+# Pre-compute frozen sets for faster membership testing
+_DOCUMENT_EXTENSIONS = frozenset(DOCUMENT_EXTENSIONS)
+_IMAGE_EXTENSIONS = frozenset(IMAGE_EXTENSIONS)
+_PROGRAM_EXTENSIONS = frozenset(PROGRAM_EXTENSIONS)
+
+
 def category_for(extension: str, is_directory: bool) -> str:
     if is_directory:
         return "folder"
     ext = (extension or "").casefold()
-    if ext in DOCUMENT_EXTENSIONS:
+    if ext in _DOCUMENT_EXTENSIONS:
         return "document"
-    if ext in IMAGE_EXTENSIONS:
+    if ext in _IMAGE_EXTENSIONS:
         return "image"
-    if ext in PROGRAM_EXTENSIONS:
+    if ext in _PROGRAM_EXTENSIONS:
         return "program"
     return "file"
+
+
+# Pre-computed units tuple to avoid list allocation on every call
+_UNITS = ("B", "KB", "MB", "GB", "TB")
 
 
 def format_size(size: int) -> str:
     if size is None:
         return ""
     value = float(max(0, size))
-    units = ["B", "KB", "MB", "GB", "TB"]
-    for unit in units:
-        if value < 1024 or unit == units[-1]:
+    for unit in _UNITS:
+        if value < 1024 or unit == _UNITS[-1]:
             if unit == "B":
                 return f"{int(value)} B"
             return f"{value:.1f} {unit}"
